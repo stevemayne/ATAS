@@ -31,6 +31,9 @@ GEOMETRY_RELATIONS = {"continue", "revisit", "recapture"}
 @dataclass
 class Policy:
     film_repairs: int = int(os.getenv("ATAS_FILM_REPAIRS", "2"))
+    # Generated opening stills are reviewed (and repaired by targeted edit) before any
+    # video is made from them; 0 skips the review.
+    still_repairs: int = int(os.getenv("ATAS_STILL_REPAIRS", "2"))
     camera_replans: int = int(os.getenv("ATAS_CAMERA_REPLANS", "2"))
     operational_attempts: int = int(os.getenv("ATAS_OPERATIONAL_ATTEMPTS", "3"))
     backoff_seconds: tuple = (15, 60, 180)
@@ -56,13 +59,14 @@ def transient(exc: BaseException) -> bool:
     from atas.world.geometry_client import GeometryWaitUncertain, GeometryJobFailed
     from atas.runner.ai_recovery import content_policy_refusal
     from atas.providers.llm import transient as llm_transient
+    from atas.providers.comfyui.client import ComfyUIUnavailable
     if content_policy_refusal(exc):
         return False
     if isinstance(exc, GeometryJobFailed):
         return exc.retryable and exc.error_code in {
             "cuda_out_of_memory", "gpu_capacity_unavailable", "cuda_linalg_initialization_failed",
             "cuda_native_runtime_failed"}
-    if isinstance(exc, GeometryWaitUncertain) or llm_transient(exc):
+    if isinstance(exc, (GeometryWaitUncertain, ComfyUIUnavailable)) or llm_transient(exc):
         return True
     text = str(exc).lower()
     return any(t in text for t in ("http 429", "http 500", "http 502", "http 503", "http 504", "http 520",
@@ -342,7 +346,7 @@ class StoryRunner:
     async def _execute(self, shot: PlanShot, shot_dir: Path, binding: Binding, *, admit: bool = True) -> dict:
         from atas.shot.camera_planner import camera_conditioned_shot
         from atas.media import existing_artifact
-        from atas.providers.wan.generation import build_request, generate_shot
+        from atas.providers.video import build_request, generate_shot
         shot_dir.mkdir(parents=True, exist_ok=True)
         geometry = self.geometry
         recapture = binding.recapture
@@ -407,6 +411,11 @@ class StoryRunner:
             from PIL import Image
             with Image.open(still) as image:
                 image.verify()
+            # Once the clip exists (a resumed shot) the still no longer conditions anything.
+            if self.policy.still_repairs > 0 and already is None:
+                self.stage(shot_dir, "still_review")
+                shot = await self._review_still(shot, shot_dir, still, render_intent, geometry_video,
+                                                author_refs, packing)
 
         # ---- G: generate the clip
         request, _, _ = build_request(camera_conditioned_shot(shot, render_intent), require_files=True, **packing)
@@ -633,11 +642,43 @@ class StoryRunner:
         write_json_atomic(shot_dir / "film_intent_review.json", {k: v for k, v in review.items() if k != "selection"})
         return shot, film, review, f
 
+    async def _review_still(self, shot, shot_dir, still, render_intent, geometry_video, author_refs, packing):
+        """Review a generated opening still and repair it by targeted edit before it
+        conditions the video. An unrepaired still is kept; film review still applies."""
+        from atas.review.film_review import review_shot
+        from atas.review.repair import RepairExhausted, promote_reviewed, repair_until_reviewed
+        from atas.shot.prompt_author import author_prompts, generate_authored_still
+        from atas.providers.video import build_request
+
+        async def revise(current, attempt, feedback, failed):
+            bare = replace(current, raw={k: v for k, v in current.raw.items() if k != "_generation_prompts"})
+            draft, _, _ = build_request(bare, require_files=False, **{**packing, "output_dir": attempt})
+            current = author_prompts(bare, attempt, references=draft.condition.references,
+                                     geometry_video=geometry_video, scene_reference=author_refs.get("scene"),
+                                     composition_guide=author_refs.get("guide"), generate_first_frame=True,
+                                     intent=render_intent, revision_feedback=feedback, failed_first_frame=failed,
+                                     history_root=shot_dir.parent)
+            repaired = generate_authored_still(current, attempt / still.name)
+            if repaired is None:
+                raise RuntimeError("still repair produced no first-frame prompt")
+            return current, repaired
+
+        try:
+            shot, reviewed, _ = await repair_until_reviewed(
+                shot, still, shot_dir, stage="first_frame", review=review_shot, revise=revise,
+                max_repairs=min(2, self.policy.still_repairs), review_kwargs={"intent": render_intent},
+                context_key={"intent": render_intent, "still": still.name})
+        except RepairExhausted:
+            self.log(shot, "opening still still fails review after repairs; using it, film review decides")
+            return shot
+        promote_reviewed(reviewed, still, stage="first_frame", shot_dir=shot_dir)
+        return shot
+
     def _video_revision(self, shot_dir, render_intent, packing, author_refs):
         from atas.shot.camera_planner import camera_conditioned_shot
         from atas.media import existing_artifact
         from atas.shot.prompt_author import author_prompts
-        from atas.providers.wan.generation import build_request, generate_shot
+        from atas.providers.video import build_request, generate_shot
         async def revise(current, attempt, feedback, failed):
             bare = replace(current, raw={k: v for k, v in current.raw.items() if k != "_generation_prompts"})
             attempt_packing = {**packing, "output_dir": attempt}

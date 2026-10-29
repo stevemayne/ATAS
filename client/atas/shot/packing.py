@@ -118,6 +118,7 @@ def select_character_stills(
     has_continuity_still: bool,
     reserved_slots: int,
     output_dir: Path | None = None,
+    slots: int | None = None,
 ) -> tuple[list[CharacterStill], list[CharacterStill]]:
     """Fill leftover Wan 3.0 slots after packing C (PC video + one still).
 
@@ -126,7 +127,7 @@ def select_character_stills(
     is already full — then the continuity last-frame carries them.
     """
 
-    remaining = max(0, WAN30_REFERENCE_CAP - reserved_slots)
+    remaining = max(0, WAN30_REFERENCE_CAP - reserved_slots) if slots is None else max(0, slots)
     appearing = appearing_characters(shot)
     previous = {name.strip() for name in previous_entity_ids if str(name).strip()}
     newcomers = [(name, path) for name, path in appearing if name not in previous]

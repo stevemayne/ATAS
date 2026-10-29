@@ -129,7 +129,7 @@ def story(tmp_path, monkeypatch):
     monkeypatch.setattr(im, "write_composition_guide", lambda video, report, out: (Image.new("RGB", (8, 8)).save(out), out)[1])
 
     def review(shot, video, folder, *, stage, **k):
-        return review_for(video, "hold" if shot.shot_id == "s3" else "pass")
+        return review_for(video, "hold" if shot.shot_id == "s3" and stage == "film" else "pass")
     monkeypatch.setattr(ir, "review_shot", review)
 
     def best(shot, shot_dir):
@@ -237,3 +237,30 @@ def test_reviewed_film_is_kept_when_only_admission_keeps_failing(story):
     assert row["film_status"] == "reviewed" and row["f"] and not row["r"]
     assert row["reason"].startswith("admission_failed") and "__degraded" not in str(row["video"])
     assert not (tmp_path / "runs/story_demo/s2__degraded").exists()
+
+
+def test_failed_opening_still_is_repaired_before_the_video_uses_it(story, monkeypatch):
+    import atas.review.film_review as ir
+    import atas.shot.prompt_author as pa
+    plan, geometry, tmp_path = story
+    seen = []
+
+    def review(shot, media, folder, *, stage, **k):
+        if stage == "first_frame":
+            seen.append(Path(media).name)
+            decision = "hold" if shot.shot_id == "s1" and len(seen) == 1 else "pass"
+            return {**review_for(media, decision), "stage": "first_frame"}
+        return review_for(media, "pass")
+    monkeypatch.setattr(ir, "review_shot", review)
+
+    def repaired_still(shot, output):
+        Image.new("RGB", (64, 36), (200, 100, 50)).save(output)
+        return output
+    monkeypatch.setattr(pa, "generate_authored_still", repaired_still)
+    runner = StoryRunner(plan, run_id="run", run_dir=tmp_path / "runs", policy=Policy(film_repairs=1))
+    rows = {r["shot_id"]: r for r in asyncio.run(runner.run())["shots"]}
+    assert rows["s1"]["f"]
+    still = tmp_path / "runs/story_demo/s1/cold_start_first_frame.png"
+    with Image.open(still) as image:
+        assert image.getpixel((0, 0)) == (200, 100, 50)        # the repaired still replaced the failed one
+    assert (tmp_path / "runs/story_demo/s1/repairs/first_frame/attempt_01/failed.png").is_file()

@@ -1,7 +1,8 @@
 """One LLM/VLM transport for planning, camera grounding, prompt authoring and review.
 
 Both an OpenAI-compatible Responses endpoint (``ATAS_LLM_URL``) and a
-chat-completions endpoint are supported. Transient provider failures (rate
+chat-completions endpoint (``ATAS_CHAT_URL``, e.g. a local LM Studio server;
+no API key needed there) are supported. Transient provider failures (rate
 limits, 5xx, gateway HTML pages, timeouts, dropped connections) are retried
 with backoff; content and schema errors are returned to the caller.
 """
@@ -156,8 +157,9 @@ def _responses_text(body: dict[str, Any]) -> str:
 
 
 def _chat_once(messages: Sequence[Message], *, timeout: float) -> str:
-    key = _api_key()
-    responses = os.getenv("ATAS_LLM_URL", "").strip().rstrip("/")
+    chat_url = os.getenv("ATAS_CHAT_URL", "").strip()
+    key = (os.getenv("ATAS_LLM_API_KEY", "").strip() or "local") if chat_url else _api_key()
+    responses = "" if chat_url else os.getenv("ATAS_LLM_URL", "").strip().rstrip("/")
     if responses:
         url = responses if responses.endswith("/responses") else responses + "/responses"
         payload: dict[str, Any] = {"model": model_name(), "input": _responses_payload(messages), "stream": False}
@@ -169,7 +171,7 @@ def _chat_once(messages: Sequence[Message], *, timeout: float) -> str:
         else:
             text = _responses_text(_post(url, payload, key, timeout))
     else:
-        base = (os.getenv("AVWM_IMAGE_BASE_URL", "").strip() or os.getenv("OPENAI_BASE_URL", "").strip()
+        base = (chat_url or os.getenv("AVWM_IMAGE_BASE_URL", "").strip() or os.getenv("OPENAI_BASE_URL", "").strip()
                 or "https://api.openai.com/v1").rstrip("/")
         url = base if base.endswith("/chat/completions") else (
             base + "/chat/completions" if base.endswith("/v1") else base + "/v1/chat/completions")
@@ -191,8 +193,15 @@ def _chat_once(messages: Sequence[Message], *, timeout: float) -> str:
     return text
 
 
+# LM Studio could not (re)load the model, usually because another GPU stage still
+# holds memory; releasing that stage and retrying fixes it.
+_LOAD_FAILURES = ("failed to load model", "model is unloaded", "model has crashed")
+
+
 def transient(exc: BaseException) -> bool:
     if isinstance(exc, LLMUnavailable) or getattr(exc, "service_unavailable", False):
+        return True
+    if os.getenv("ATAS_CHAT_URL", "").strip() and any(text in str(exc).lower() for text in _LOAD_FAILURES):
         return True
     return isinstance(exc, (TimeoutError, ConnectionError, urllib.error.URLError))
 
@@ -204,6 +213,10 @@ def chat(messages: Sequence[Message] | str, *, images: Sequence[np.ndarray] = ()
         messages = [Message("user", messages, tuple(images))]
     # About 15 minutes of backoff rides out short gateway outages.
     attempts = attempts or int(os.getenv("ATAS_LLM_ATTEMPTS", "10"))
+    if os.getenv("ATAS_CHAT_URL", "").strip():
+        # A local model can take minutes on a long multi-image prompt; abandoning it
+        # only queues a duplicate request behind the one still running.
+        timeout = max(timeout, float(os.getenv("ATAS_CHAT_TIMEOUT_SECONDS", "900")))
     for attempt in range(attempts):
         try:
             return _chat_once(messages, timeout=timeout)
@@ -212,6 +225,11 @@ def chat(messages: Sequence[Message] | str, *, images: Sequence[np.ndarray] = ()
                 raise
             if attempt == attempts - 1:
                 raise LLMUnavailable(f"model unavailable after {attempts} attempts: {exc}") from exc
+            print(f"llm: attempt {attempt + 1}/{attempts} failed ({type(exc).__name__}: {str(exc)[:160]}); retrying",
+                  flush=True)
+            if any(text in str(exc).lower() for text in _LOAD_FAILURES):
+                from atas.providers.gpu_share import release_for
+                release_for("llm")
             time.sleep(min(120.0, 4.0 * 2 ** attempt))
     raise AssertionError("unreachable")
 

@@ -177,6 +177,10 @@ def _jpeg_data_url(frame: np.ndarray) -> str:
 
 def _chat(prompt: str, *, images: list[np.ndarray], temperature: float) -> str:
     del temperature
+    if os.getenv("ATAS_CHAT_URL", "").strip():
+        # A local chat endpoint (LM Studio) serves every language-model call.
+        from atas.providers.llm import chat
+        return chat(prompt, images=images)
     api_key = (
         os.getenv("AVWM_IMAGE_API_KEY", "").strip()
         or os.getenv("ATAS_LLM_API_KEY", "").strip()

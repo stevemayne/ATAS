@@ -21,6 +21,7 @@ venv/
 # Run outputs, caches and weights
 /client/runs/
 /client/geometry_endpoint.json
+/client/.cache/
 /geometry/models/
 /geometry/backbones/checkpoints/
 hf_cache/

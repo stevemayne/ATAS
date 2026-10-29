@@ -20,7 +20,10 @@ def load_dotenv(path: Path = ENV_PATH) -> None:
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip("'").strip('"'))
+        value = value.strip()
+        if value[:1] not in {"'", '"'}:
+            value = value.split(" #", 1)[0].split("\t#", 1)[0].strip()  # inline comment
+        os.environ.setdefault(key.strip(), value.strip("'").strip('"'))
 
 
 def apply_generation_defaults() -> None:

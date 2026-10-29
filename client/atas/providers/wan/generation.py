@@ -15,8 +15,8 @@ from atas.providers.wan.types import (
     V2VTask,
 )
 
+from atas.providers.video import character_slots, check_packing, provider
 from atas.shot.packing import (
-    WAN30_REFERENCE_CAP,
     CharacterStill,
     reserved_reference_slots,
     select_character_stills,
@@ -227,6 +227,10 @@ def build_request(
             if has_continuity
             else ReferenceRole.FIRST_FRAME
         )
+        if same_event_recapture and role is ReferenceRole.FIRST_FRAME and provider() == "comfyui":
+            # H3 would treat a "first frame" as the opening composition and replay the
+            # source camera; on a recapture this frame is appearance evidence only.
+            role = ReferenceRole.EVENT_MASTER
         references.append(
             MediaReference(
                 path=still,
@@ -245,6 +249,7 @@ def build_request(
         has_continuity_still=has_continuity,
         reserved_slots=reserved,
         output_dir=output_dir,
+        slots=character_slots(has_geometry=has_geometry, has_still=has_still),
     )
     character_refs, unused = _character_references(
         chosen,
@@ -290,15 +295,7 @@ def build_request(
         output_dir=output_dir,
         mock_mode=False,
     )
-    packed = [
-        item
-        for item in request.condition.references
-        if item.media_type in {"video", "image"}
-    ]
-    if len(packed) > WAN30_REFERENCE_CAP:
-        raise RuntimeError(
-            f"{shot.shot_id} packed {len(packed)} Wan references; cap is {WAN30_REFERENCE_CAP}"
-        )
+    check_packing(shot.shot_id, request.condition.references)
     return request, chosen, skipped
 
 

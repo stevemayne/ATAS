@@ -93,3 +93,52 @@ def test_recapture_without_reference_never_claims_event_pass(tmp_path, monkeypat
     assert result['decision'] == 'warning'
     assert next(c for c in result['checks'] if c['criterion'] == 'event')['status'] == 'uncertain'
     assert result['exact_camera_or_event_verified'] is False
+
+
+def test_top_level_critical_basis_attaches_to_the_single_critical_fail() -> None:
+    from atas.review.film_review import decide
+    rows = [{"criterion": name, "status": "pass", "severity": "minor", "confidence": 0.9, "evidence": "seen"}
+            for name in ("subject", "framing", "motion", "event", "world_consistency")]
+    action = {"criterion": "action", "status": "fail", "severity": "critical", "confidence": 0.95,
+              "evidence": "umbrella open; screenplay says closed"}
+    response = {"checks": rows + [action], "critical_basis": "narrative", "impact": "contradicts the scripted action"}
+    assert decide(response, execution_profile="film_first") == "hold"
+    assert action["critical_basis"] == "narrative"
+    second = dict(rows[0], status="fail", severity="critical")
+    ambiguous = {"checks": [second] + rows[1:] + [dict(action, critical_basis=None)],
+                 "critical_basis": "narrative", "impact": "x"}
+    for c in ambiguous["checks"]:
+        c.pop("critical_basis", None)
+    import pytest
+    with pytest.raises(ValueError, match="critical_basis"):
+        decide(ambiguous, execution_profile="film_first")
+
+
+def test_top_level_world_change_fields_attach_to_the_failed_world_check() -> None:
+    from atas.review.film_review import attach_misplaced_fields
+    world = {"criterion": "world_consistency", "status": "fail", "severity": "critical", "confidence": 0.9,
+             "evidence": "floor changed"}
+    response = attach_misplaced_fields({"checks": [world], "world_change_kind": "layout", "story_essential": True,
+                                        "critical_basis": "severe_world", "impact": "material lost"})
+    assert world["world_change_kind"] == "layout" and world["story_essential"] is True
+    assert world["critical_basis"] == "severe_world"
+
+
+def test_unjustified_critical_is_demoted_but_justified_one_still_holds() -> None:
+    from atas.review.film_review import decide
+    rows = [{"criterion": name, "status": "pass", "severity": "minor", "confidence": 0.9, "evidence": "seen"}
+            for name in ("subject", "motion", "world_consistency")]
+    framing = {"criterion": "framing", "status": "fail", "severity": "critical", "confidence": 0.9, "evidence": "tight"}
+    action = {"criterion": "action", "status": "fail", "severity": "critical", "confidence": 0.9, "evidence": "no handover",
+              "critical_basis": "narrative", "impact": "the scripted handover never happens"}
+    event = {"criterion": "event", "status": "fail", "severity": "minor", "confidence": 0.5, "evidence": ""}
+    response = {"checks": rows + [framing, action, event]}
+    import pytest
+    with pytest.raises(ValueError):                      # strict: the model is asked to correct first
+        decide(response, execution_profile="film_first")
+    assert decide(response, execution_profile="film_first", lenient=True) == "hold"
+    assert framing["severity"] == "minor" and framing["reported_severity"] == "critical"
+    assert event["status"] == "uncertain" and event["evidence"]
+    action["critical_basis"] = None
+    assert decide({"checks": rows + [framing, action, event]}, execution_profile="film_first",
+                  lenient=True) == "warning"

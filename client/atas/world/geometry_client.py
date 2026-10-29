@@ -547,12 +547,16 @@ class GeometryClient:
             payload["world_time_start"] = float(world_time_start)
         if not self.enabled:
             return GeometryJob(job_id="dry-recon", kind="recon", payload=payload)
+        from atas.providers.gpu_share import release_for
+        release_for("geometry")
         response = self._submit_with_video("/v1/jobs", payload, video)
         return GeometryJob(str(response.get("job_id") or ""), "recon", payload)
 
     def render(self, payload: dict[str, Any]) -> GeometryJob:
         if not self.enabled:
             return GeometryJob(job_id="dry-render", kind="render", payload=payload)
+        from atas.providers.gpu_share import release_for
+        release_for("geometry")
         response = self._request("POST", "/v1/jobs", {**payload,"retry_failed":True})
         return GeometryJob(str(response.get("job_id") or ""), "render", payload)
 

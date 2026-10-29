@@ -6,6 +6,7 @@ Two transports reach the same image model:
   responses_tool  POST /responses with the built-in ``image_generation`` tool; reference
                   images are passed as input images (gateways that expose GPT models
                   but no standalone image endpoint)
+  comfyui         Flux.2 Klein image edit on a ComfyUI server (COMFYUI_* settings)
 
 ``ATAS_IMAGE_BACKEND`` selects one; the default ``auto`` tries the images API and
 switches to the Responses tool for the rest of the process when the gateway reports
@@ -27,8 +28,8 @@ def _backend() -> str:
     global _BACKEND
     if _BACKEND is None:
         _BACKEND = os.getenv("ATAS_IMAGE_BACKEND", "auto").strip().lower()
-        if _BACKEND not in {"auto", "images_api", "responses_tool"}:
-            raise ValueError("ATAS_IMAGE_BACKEND must be auto, images_api or responses_tool")
+        if _BACKEND not in {"auto", "images_api", "responses_tool", "comfyui"}:
+            raise ValueError("ATAS_IMAGE_BACKEND must be auto, images_api, responses_tool or comfyui")
     return _BACKEND
 
 
@@ -110,6 +111,13 @@ def generate(prompt: str, output: Path, *, references: Sequence[Path] = (), nega
     APIs offer only a few sizes, e.g. 3:2) is centre-cropped; a portrait or square
     image is regenerated with an explicit framing instruction.
     """
+    if _backend() == "comfyui":
+        # The workflow renders the exact requested size, so no aspect retries are needed.
+        from atas.providers.comfyui.image import generate_image
+        if negative_prompt:
+            prompt += f"\nAvoid: {negative_prompt}"
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        return generate_image(prompt, Path(output), references=references, aspect=aspect)
     if aspect is None:
         return _generate(prompt, output, references=references, negative_prompt=negative_prompt)
     shape = "landscape 16:9" if abs(aspect - 16 / 9) < 0.01 else f"{aspect:.2f}:1 aspect"

@@ -61,7 +61,10 @@ first_frame_prompt describes ONLY the opening instant: composition, subject pose
 placement, appearance and light. Reference images for this model use 'Image 1',
 'Image 2', etc. from image_reference_manifest. A guide's boxes are annotations,
 not objects or complete silhouettes to reproduce. Copy its viewpoint/layout, not
-point noise or holes. Identity cards constrain identity, never camera composition.
+point noise or holes. Identity cards constrain identity, never camera composition:
+take only face, hair, build and clothing from them, never their pose, framing or
+any object the person holds there (an umbrella, bag or prop comes from the
+screenplay, in the state the screenplay gives it).
 If generate_first_frame=false, return an empty first_frame_prompt; do not redraw
 a continuous-shot last frame or an original event frame.
 
@@ -130,7 +133,8 @@ remaining tension in "conflicts" for the record, but still return "ready".
 
 
 def video_manifest(references):
-    return [{'handle':r.prompt_handle,'role':r.role.value,'people':list(r.character_mapping),
+    from atas.providers.video import prompt_handle
+    return [{'handle':prompt_handle(r),'role':r.role.value,'people':list(r.character_mapping),
         'path':str(r.path)} for r in references]
 
 
@@ -187,19 +191,28 @@ def validate(response,labels,manifest,generate_first_frame):
         raise ValueError('prompt author must address every known character: '+json.dumps(
             {'required_character_labels':list(labels),'missing':missing,'extra':extra,
              'received_labels':actual,'rule':'exactly one row per required label with nonempty treatment'},ensure_ascii=False))
+    from atas.providers.video import handle_pattern, max_prompt_chars
     for key,required in (('video_prompt',True),('first_frame_prompt',generate_first_frame)):
         value=response.get(key)
-        if not isinstance(value,str) or (required and not value.strip()) or len(value)>4000:
+        if not isinstance(value,str) or (required and not value.strip()) or len(value)>max_prompt_chars():
             raise ValueError('missing or excessively long authored prompt')
     if not generate_first_frame and response['first_frame_prompt'].strip():
         raise ValueError('source frame must not be redrawn')
-    handles=set(re.findall(r'@(?:图片|视频)\d+',response['video_prompt']))
+    sentences=re.split(r'(?<=[.!?。])\s+|\n+',response['video_prompt'])
+    anchoring=re.compile(r'first[- ]frame|opening frame|(?:begins|starts|opens) (?:from|on|with)',re.I)
+    for row in manifest:
+        if row['role']=='event_master':
+            if any(row['handle'] in sentence and anchoring.search(sentence) for sentence in sentences):
+                raise ValueError('recapture: '+row['handle']+' is the source event frame, appearance evidence only; '
+                                 'do not call it the first frame or begin the shot from it. The new camera and '
+                                 'composition come from the target_geometry video.')
+    handles=set(re.findall(handle_pattern(),response['video_prompt']))
     expected={r['handle'] for r in manifest}
     if handles!=expected:
         raise ValueError('authored video prompt reference handles differ from actual packing: '+json.dumps(
             {'missing':[{'handle':r['handle'],'role':r['role']} for r in manifest if r['handle'] not in handles],
              'not_in_manifest':sorted(handles-expected),
-             'rule':'use every video_reference_manifest handle exactly as written, and no other @ handle'},
+             'rule':'use every video_reference_manifest handle exactly as written, and no other reference handle'},
             ensure_ascii=False))
     return response
 
@@ -238,7 +251,9 @@ def author_prompts(shot,shot_dir,*,references,geometry_video=None,scene_referenc
         if (observation_dir(history_root,sid)/'result.mp4').is_file())
     manifest=video_manifest(references)
     model=os.environ.get('AVWM_DYNAMIC_KEYWORD_MODEL') or os.environ.get('ATAS_LLM_MODEL') or 'gpt-4.1-mini'
-    evidence_key=hashlib.sha256(json.dumps({'protocol':PROMPT+FIRST_FRAME_REPAIR_PROMPT,
+    from atas.providers.video import prompt_protocol
+    video_rules=prompt_protocol()
+    evidence_key=hashlib.sha256(json.dumps({'protocol':PROMPT+video_rules+FIRST_FRAME_REPAIR_PROMPT,
         'raw':raw,'screenplay':shot.prompt,'provider_script':shot.provider_prompt,'style':shot.style_contract,
         'duration':shot.duration,'shot_size':shot.shot_size,'perspective':shot.shot_perspective,
         'motion':shot.camera_move_name,'entity_ids':shot.entity_ids,'manifest':manifest,
@@ -271,7 +286,7 @@ def author_prompts(shot,shot_dir,*,references,geometry_video=None,scene_referenc
         'camera_plan':{k:v for k,v in (intent or {}).get('camera_plan',{}).items() if k in ('framing','motion','subjects','planned_entrants','planned_props','reason')},
         'model':model,'policy':'ai-generation-prompts-v1',
         'video_condition_policy':shot.raw.get('video_condition_policy')}
-    protocol = PROMPT
+    protocol = PROMPT+video_rules
     if repair_base:protocol+=FIRST_FRAME_REPAIR_PROMPT
     from atas.request import planning_context
     data['story_plan']=planning_context(shot)

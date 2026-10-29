@@ -1,0 +1,74 @@
+{
+  "generator": "136",
+  "prompt": {
+    "node": "136",
+    "input": "prompt"
+  },
+  "seed": {
+    "node": "129",
+    "input": "noise_seed"
+  },
+  "duration": {
+    "node": "132",
+    "input": "value"
+  },
+  "width": {
+    "node": "136",
+    "input": "width"
+  },
+  "height": {
+    "node": "136",
+    "input": "height"
+  },
+  "turbo": {
+    "node": "146",
+    "input": "value"
+  },
+  "videos": [
+    {
+      "node": "160",
+      "input": "file"
+    }
+  ],
+  "images": [
+    {
+      "node": "170",
+      "input": "image"
+    },
+    {
+      "node": "171",
+      "input": "image"
+    },
+    {
+      "node": "172",
+      "input": "image"
+    },
+    {
+      "node": "173",
+      "input": "image"
+    },
+    {
+      "node": "174",
+      "input": "image"
+    },
+    {
+      "node": "175",
+      "input": "image"
+    },
+    {
+      "node": "176",
+      "input": "image"
+    },
+    {
+      "node": "177",
+      "input": "image"
+    },
+    {
+      "node": "178",
+      "input": "image"
+    }
+  ],
+  "output": {
+    "node": "92"
+  }
+}

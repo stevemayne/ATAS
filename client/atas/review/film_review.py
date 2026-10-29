@@ -183,12 +183,43 @@ def frames(path, count=7, start=0., end=None):
     finally: cap.release()
 
 
+CRITICAL_BASES = {'narrative', 'identity', 'severe_world', 'source_camera', 'event_replay'}
+
 # A critical failure at or above this confidence holds the film (stated in the prompt).
 CRITICAL_CONFIDENCE = 0.75
 
 
-def decide(response, *, execution_profile='strict', same_event_recapture=False):
-    checks=response.get('checks',[])
+def attach_misplaced_fields(response, execution_profile=None, *, lenient=False):
+    """Smaller reviewers sometimes put a failed check's own fields beside the checks
+    instead of inside it. Move them in only when exactly one check can own them."""
+    checks=[c for c in response.get('checks',[]) if isinstance(c,dict)]
+    owners=(
+        (('critical_basis','impact'),
+         [c for c in checks if c.get('status')=='fail' and c.get('severity')=='critical' and not c.get('critical_basis')]),
+        (('world_change_kind','story_essential'),
+         [c for c in checks if c.get('criterion')=='world_consistency' and c.get('status')=='fail'
+          and 'world_change_kind' not in c]),
+    )
+    for fields,candidates in owners:
+        if len(candidates)==1 and all(f in response for f in fields):
+            for field in fields:
+                candidates[0].setdefault(field,response[field])
+    for c in checks if lenient and execution_profile=='film_first' else ():
+        # The policy admits only justified critical failures; an unjustified one is
+        # kept on record as a warning instead of voiding the whole review.
+        if (c.get('status')=='fail' and c.get('severity')=='critical'
+                and (c.get('critical_basis') not in CRITICAL_BASES
+                     or not isinstance(c.get('impact'),str) or not c['impact'].strip())):
+            c.update(reported_severity='critical',severity='minor',severity_policy='unjustified_critical_demoted_v1')
+        if not (isinstance(c.get('evidence'),str) and c['evidence'].strip()):
+            if c.get('status')=='fail':
+                c['status']='uncertain'
+            c['evidence']='No evidence stated by the reviewer.'
+    return response
+
+
+def decide(response, *, execution_profile='strict', same_event_recapture=False, lenient=False):
+    checks=attach_misplaced_fields(response, execution_profile, lenient=lenient).get('checks',[])
     if len(checks)!=6 or {c.get('criterion') for c in checks}!={'subject','framing','motion','action','event','world_consistency'}:
         raise ValueError('checks must be exactly six rows, one per criterion subject, framing, motion, action, '
                          'event, world_consistency; received '+json.dumps([c.get('criterion') for c in checks if isinstance(c,dict)]))
@@ -359,11 +390,11 @@ def review_shot(shot,video,shot_dir,*,stage,intent=None,lineage=None,source_even
     def generate(recovery):
         recovery={**recovery,'instruction':'Correct response schema and missing evidence fields only. Reinspect the same evidence; do not change a negative verdict to pass. Valid hold/fail verdicts are accepted and will trigger the separate generation-repair workflow.'}
         return chat_with_retry(prompt+'\nDATA:\n'+json.dumps({**data,'format_recovery':recovery},ensure_ascii=False),images=images,temperature=0)
-    def parse(text):
+    def parse(text, lenient=False):
         clean=text.strip()
         if clean.startswith('```'):clean=clean.split('\n',1)[1].rsplit('```',1)[0]
         try:
-            response=json.loads(clean)
+            response=attach_misplaced_fields(json.loads(clean), profile, lenient=lenient)
             if profile == 'film_first':
                 for check in response.get('checks',[]):
                     if check.get('criterion')=='world_consistency' and check.get('status')=='fail':
@@ -375,7 +406,7 @@ def review_shot(shot,video,shot_dir,*,stage,intent=None,lineage=None,source_even
                 for check in response.get('checks', []):
                     if check.get('criterion') == 'event' and check.get('status') in {'pass', 'not_applicable'}:
                         check.update(status='uncertain', evidence='Source-event visual evidence not supplied; exact replay was not checked.')
-            decision=decide(response, execution_profile=profile, same_event_recapture=same_event)
+            decision=decide(response, execution_profile=profile, same_event_recapture=same_event, lenient=lenient)
             if stage=='film' and 'observed_dynamic_classes' in response:
                 validate_dynamic_classes(response['observed_dynamic_classes'])
             if scene and stage=='film':
@@ -384,7 +415,20 @@ def review_shot(shot,video,shot_dir,*,stage,intent=None,lineage=None,source_even
         except (ValueError,TypeError,KeyError):
             write_json_atomic(shot_dir/(stage+'_review_invalid.json'),{'cache_key':key,'response':text});raise
         return response,decision
-    response,decision=corrected_json(shot_dir/(stage+'_review_recovery'),key,generate,parse)
+    from atas.runner.ai_recovery import AIRecoveryExhausted
+    try:
+        response,decision=corrected_json(shot_dir/(stage+'_review_recovery'),key,generate,parse)
+    except AIRecoveryExhausted:
+        # Every correction still broke the schema. Read the last reply under the
+        # policy itself (unjustified criticals are warnings, unevidenced fails are
+        # uncertain) rather than discarding the reviewer's verdict.
+        attempts=sorted((shot_dir/(stage+'_review_recovery')/key).glob('attempt_*.json'))
+        last=next((json.loads(f.read_text()).get('response') for f in reversed(attempts)
+                   if json.loads(f.read_text()).get('response')),None)
+        if last is None:
+            raise
+        response,decision=parse(last,lenient=True)
+        response['schema_recovery']='lenient_after_exhausted_corrections_v1'
     result={'schema_version':1,'stage':stage,'cache_key':key,'decision':decision,
         'evidence_key':evidence_key,
         'video_sha256':data['video_sha256'],'lineage':lineage or {},'checks':response['checks'],

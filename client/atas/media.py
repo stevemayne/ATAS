@@ -12,7 +12,8 @@ def existing_artifact(shot_dir: Path) -> Path | None:
         return direct
     found = [
         path
-        for path in shot_dir.glob("wan27/*/result.mp4")
+        for pattern in ("wan27/*/result.mp4", "comfyui/*/result.mp4")
+        for path in shot_dir.glob(pattern)
         if path.is_file() and path.stat().st_size > 0
     ]
     if not found:
