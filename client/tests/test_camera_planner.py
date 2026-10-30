@@ -76,3 +76,26 @@ def test_onstage_context_character_and_compiled_brief_are_valid_evidence():
     import pytest
     with pytest.raises(ValueError, match="not a known character"):
         validate_for_shot(plan, shot, {})
+
+
+def test_unliftable_actor_is_staged_on_scenery():
+    from atas.shot.camera_planner import validate_for_shot
+    raw = {"onstage_labels": ["chen"], "_world_admitted_ids": ["shot01"],
+           "_scene_context": {"entities": {"chen": {"label": "chen", "source_shot_id": "shot01"}}}}
+    shot = SimpleNamespace(raw=raw, entity_ids=("chen",), prompt="Chen stares at the shop window.",
+                           provider_prompt="", shot_perspective="", camera_move_name="locked")
+    plan = {"subjects": [{"label": "shop_window", "kind": "static", "subject_type": "object",
+                          "part": "object", "framing_role": "focal"}],
+            "motion": {"name": "locked"},
+            "planned_entrants": [{"label": "chen", "anchor_label": "shop_window",
+                                  "screenplay_evidence": "Chen stares at the shop window",
+                                  "placement": "in profile before the window", "status": "planned_unobserved"}]}
+    intent = {"camera_source_shot_id": "shot01"}
+    with pytest.raises(ValueError, match="not a new entrant"):
+        validate_for_shot(plan, shot, intent)
+    intent["camera_execution_feedback"] = {"unliftable_actors": ["chen"]}
+    assert validate_for_shot(plan, shot, intent) is plan
+    grounded = {**plan, "subjects": [*plan["subjects"], {"label": "chen", "kind": "dynamic", "framing_role": "focal"}],
+                "planned_entrants": []}
+    with pytest.raises(ValueError, match="cannot be lifted"):
+        validate_for_shot(grounded, shot, intent)

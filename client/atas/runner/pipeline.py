@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import time
 import traceback
@@ -34,7 +35,7 @@ class Policy:
     # Generated opening stills are reviewed (and repaired by targeted edit) before any
     # video is made from them; 0 skips the review.
     still_repairs: int = int(os.getenv("ATAS_STILL_REPAIRS", "2"))
-    camera_replans: int = int(os.getenv("ATAS_CAMERA_REPLANS", "2"))
+    camera_replans: int = int(os.getenv("ATAS_CAMERA_REPLANS", "3"))
     operational_attempts: int = int(os.getenv("ATAS_OPERATIONAL_ATTEMPTS", "3"))
     backoff_seconds: tuple = (15, 60, 180)
     memory: str = os.getenv("ATAS_MEMORY", "full")      # full | none
@@ -514,7 +515,7 @@ class StoryRunner:
         from atas.world.geometry_client import GeometryJob, GeometryJobFailed
         geometry = self.geometry
         state_path = shot_dir / "geometry_render_state.json"
-        replans = 0
+        replans, lift_failures = 0, {}
         while True:
             key = hashlib.sha256(json.dumps(intent, sort_keys=True).encode()).hexdigest()
             saved = json.loads(state_path.read_text()) if state_path.is_file() else {}
@@ -530,12 +531,26 @@ class StoryRunner:
                 if not camera_failure_recoverable(exc) or replans >= self.policy.camera_replans:
                     raise
                 replans += 1
+                # An actor who still cannot be lifted after a re-plan has no usable
+                # depth in this observation: stage them on scenery instead.
+                lifted = re.search(r"(?:no reliable|ambiguous) seed depth for (\S+)|"
+                                   r"insufficient grounded region for (\S+)", str(exc))
+                if lifted:
+                    label = lifted.group(1) or lifted.group(2)
+                    lift_failures[label] = lift_failures.get(label, 0) + 1
+                unliftable = sorted(label for label, count in lift_failures.items() if count >= 2)
                 feedback = {"failed_job_id": job.job_id, "error": safe_error(exc),
+                            "unliftable_actors": unliftable,
                             "previous_plan": intent.get("camera_plan"),
                             "hint": ("If a subject could not be lifted (no reliable seed depth), it is too small "
                                      "or thin to anchor the camera: ground the larger visible surface it rests on "
                                      "(table, rim, floor) as a static subject and keep the small object as a "
-                                     "planned prop.")}
+                                     "planned prop. An actor in unliftable_actors has no usable depth in "
+                                     "memory: ground one opaque static surface beside or behind them (wall, door "
+                                     "or window frame, pavement) as the focal region and stage the actor as a "
+                                     "planned_entrant on it. Ambiguous seed depth on scenery means the box spans "
+                                     "near and far things (glass with shelves behind it): tighten it to one "
+                                     "surface at one distance.")}
                 intent = plan_camera(geometry, {**intent, "camera_execution_feedback": feedback},
                                      shot, self.run_dir, shot_dir)
                 write_json_atomic(shot_dir / "geometry_render_intent.json", intent)

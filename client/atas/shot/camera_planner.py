@@ -103,6 +103,15 @@ a visible trail is staged relative to the trail; Earth seen through a window
 is staged beyond the observed window, not assigned the window's depth.
 The support anchors the camera, NOT the depth/size/identity of the new object.
 Use the intended framing around the support and record the limitation in reason.
+An actor named in RECOVERY DATA camera_execution_feedback.unliftable_actors failed
+depth lifting repeatedly: memory holds no usable depth for them in these images,
+even where they are visible. Do not ground them. Ground opaque static scenery
+beside or behind them as the focal region, framed for the intended shot, and
+stage them as planned_entrants on it. Pick ONE surface at one distance: a wall,
+door frame, window frame or pavement patch, with the box tight around it and the
+seed on its solid face. Avoid glass, reflections and boxes that span near and far
+things at once (a whole shop window with the shelves behind it reads as
+ambiguous depth).
 An unobserved first appearance (even without the word 'enters') may similarly
 use planned_entrants when scene_continuity has no prior observation of that actor.
 An actor whose scene_continuity entry has presence=planned with a memory_status
@@ -516,13 +525,17 @@ def validate_for_shot(plan,shot,intent):
         if not isinstance(prop.get('placement'),str) or not prop['placement'].strip():
             raise ValueError(f'planned prop {prop["label"]!r} needs an intended placement')
     if not isinstance(entrants,list) or len(entrants)>4:raise ValueError('invalid planned entrants')
+    unliftable=set((intent.get('camera_execution_feedback') or {}).get('unliftable_actors') or [])
+    if unliftable & set(labels):
+        raise ValueError(f'{sorted(unliftable & set(labels))} cannot be lifted from memory depth: ground the static '
+                         'scenery they stand against and stage them as planned_entrants')
     seen=set();entities=memory_continuity(shot,intent.get('camera_source_shot_id')).get('entities',{})
     for row in entrants:
         if not isinstance(row,dict):raise ValueError('invalid entrant')
         name=row.get('label');anchor=row.get('anchor_label');evidence=row.get('screenplay_evidence','')
         if name not in known_characters(shot) or name in seen or name in labels:raise ValueError('invalid or duplicate entrant label')
         if intent.get('render_mode')=='recapture' or intent.get('camera_relation')=='recapture':raise ValueError('recapture cannot invent new entrants')
-        if entities.get(name,{}).get('source_shot_id'):raise ValueError('historically observed actor is not a new entrant')
+        if entities.get(name,{}).get('source_shot_id') and name not in unliftable:raise ValueError('historically observed actor is not a new entrant')
         subject=next((s for s in plan['subjects'] if s['label']==anchor),{})
         if subject.get('kind')!='static' or anchor in shot.entity_ids:raise ValueError('entrant requires a separately grounded static spatial anchor')
         # Original screenplay text is authoritative; the adapted shot.prompt
