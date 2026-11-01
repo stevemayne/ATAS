@@ -17,6 +17,15 @@ def screenplay_context(shot: PlanShot) -> str:
     )
 
 
+def with_people(nouns, shot: PlanShot) -> tuple[str, ...]:
+    """Onstage actors always get the generic "person" class: a gendered or role noun
+    ("man") can match only part of a figure, and the rest is fused as static scenery."""
+    nouns = tuple(nouns)
+    if shot.entity_ids and "person" not in nouns:
+        nouns = ("person", *nouns)
+    return nouns
+
+
 def uses_observed_dynamics(shot: PlanShot) -> bool:
     return shot.raw.get('planning_provenance', {}).get('kind') in {
         'ai-story-planner-v1', COMPILER_VERSION,
@@ -49,7 +58,7 @@ def sam_nouns_for_recon(shot: PlanShot, video: Path, output_dir: Path) -> tuple[
         if (review.get('stage')=='film' and authorized
                 and 'observed_dynamic_classes' in review and review.get('video_sha256')==file_hash(video)):
             rows=validate_dynamic_classes(review['observed_dynamic_classes'])
-            nouns=tuple(row['noun'] for row in rows)
+            nouns=with_people((row['noun'] for row in rows),shot)
             if nouns or not shot.entity_ids:
                 write_json_atomic(output_dir/'dynamic_keywords.json',{
                     'schema_version':1,'video':str(video),'video_sha256':review['video_sha256'],
@@ -58,6 +67,7 @@ def sam_nouns_for_recon(shot: PlanShot, video: Path, output_dir: Path) -> tuple[
                     'review_cache_key':review.get('cache_key'),'evidence':rows})
                 return nouns
     planned = planned_sam_nouns(shot)
+    planned = with_people(planned, shot) if planned else ()
     if planned:
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "dynamic_keywords.json").write_text(
@@ -101,7 +111,7 @@ def sam_nouns_for_recon(shot: PlanShot, video: Path, output_dir: Path) -> tuple[
                 write_json_atomic(output_dir/'dynamic_keywords.json',{**report,
                     'cache_key':key,'ignored_whole_story_keywords':shot.raw.get('sam_keywords',[]),
                     'source':'observed-dynamics-v1','evidence_dir':str(resolve_dir)})
-            return tuple(nouns)
+            return with_people(nouns, shot)
         except (TimeoutError, OSError, DynamicKeywordError) as exc:
             last = exc
             time.sleep(min(30, 2 ** attempt))

@@ -65,11 +65,17 @@ visible means seen in at least one supplied current film frame. Not seen is not 
 departure. Set departure_observed only for a clearly witnessed exit from this scene,
 never for camera motion, occlusion, cropped views, prompt-only intent or an absent actor.
 For FILM, ALSO return observed_dynamic_classes: a list of {"noun":"cat",
-"evidence":"current frame/time evidence"}. These are 1-2 word English SAM3 class
+"evidence":"current frame/time evidence"}. These are 1-3 word English SAM3 class
 nouns for visibly present people, animals, robots, and visibly handled/carried props.
 Use class nouns, never character proper names. Include a handled prop even if its
-motion is uncertain from sparse frames. Do not include absent screenplay objects,
-walls, floors, sky, static furniture or set dressing merely mentioned in the story.
+motion is uncertain from sparse frames. A prop counts only when someone holds,
+carries or moves it, or it falls or moves on its own; an object merely visible
+(on a shelf, in a display window, on a table) is set dressing. SAM3 masks EVERY
+instance of a noun: when the handled prop also appears as set dressing (one book
+in a bookshop, a cup on a cafe counter), name it with a short distinguishing
+phrase ("book in hand", "falling photo") or leave it out. Do not include absent
+screenplay objects, walls, floors, sky, static furniture or set dressing merely
+mentioned in the story.
 An empty list is valid when no such dynamic entity is visibly present. This list
 reports current observations, not actor identity bindings and not proven motion.
 Appearance cards name identities, not required composition. Prior frames are historical,
@@ -273,8 +279,8 @@ def validate_dynamic_classes(rows):
         if not isinstance(row,dict) or not isinstance(row.get('noun'),str) or not row.get('evidence'):
             raise ValueError(f'observed_dynamic_classes row {row!r} needs a short noun and a separate evidence string')
         noun=row['noun'].strip().lower()
-        if not re.fullmatch(r'[a-z]+(?:[- ][a-z]+)?',noun) or noun in seen:
-            raise ValueError(f'dynamic class {noun!r} must be a unique one/two-word English noun')
+        if not re.fullmatch(r'[a-z]+(?:[- ][a-z]+){0,2}',noun) or noun in seen:
+            raise ValueError(f'dynamic class {noun!r} must be a unique one- to three-word English noun phrase')
         seen.add(noun);row['noun']=noun
     return rows
 
